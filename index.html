@@ -1,0 +1,319 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redmi Measure</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: #111;
+    color: white;
+    font-family: Arial, sans-serif;
+    text-align: center;
+}
+
+header {
+    padding: 18px;
+    font-size: 23px;
+    font-weight: bold;
+}
+
+.camera {
+    position: relative;
+    width: 100%;
+    max-width: 600px;
+    margin: auto;
+    background: #222;
+    overflow: hidden;
+}
+
+video {
+    display: block;
+    width: 100%;
+}
+
+canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+}
+
+.panel {
+    max-width: 600px;
+    margin: auto;
+    padding: 18px;
+}
+
+input, button, select {
+    font-size: 16px;
+    padding: 12px;
+    border-radius: 12px;
+    border: none;
+    margin: 5px 0;
+}
+
+input, select {
+    width: 100%;
+    background: #292929;
+    color: white;
+}
+
+button {
+    background: #ffcc32;
+    color: #111;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.row {
+    display: flex;
+    gap: 8px;
+}
+
+.row button { flex: 1; }
+
+#measurement {
+    font-size: 38px;
+    color: #ffcc32;
+    margin: 18px 0 8px;
+}
+
+#status {
+    color: #ccc;
+    line-height: 1.5;
+}
+
+small { color: #999; }
+</style>
+</head>
+
+<body>
+<header>📏 Redmi Measure</header>
+
+<div class="camera">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+</div>
+
+<div class="panel">
+    <button id="start" style="width:100%">
+        Open Camera
+    </button>
+
+    <div class="row">
+        <button id="calibrate">1. Calibrate</button>
+        <button id="measure">2. Measure</button>
+    </div>
+
+    <input id="known" type="number"
+        value="8.56" min="0.01" step="any"
+        placeholder="Known reference length in cm">
+
+    <select id="unit">
+        <option value="cm">Centimetres (cm)</option>
+        <option value="in">Inches (in)</option>
+    </select>
+
+    <div id="measurement">0.00 cm</div>
+    <div id="status">
+        Open the camera. Place a bank card or ruler
+        beside the object, in the same plane.
+        Tap Calibrate and select its two endpoints.
+    </div>
+
+    <button id="reset" style="width:100%">
+        Reset Points
+    </button>
+
+    <small>
+        Estimates only. Perspective and camera angle can
+        affect accuracy.
+    </small>
+</div>
+
+<script>
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const known = document.getElementById("known");
+const unit = document.getElementById("unit");
+const output = document.getElementById("measurement");
+const status = document.getElementById("status");
+
+let stream = null;
+let mode = "calibrate";
+let points = [];
+let pixelsPerCm = null;
+
+document.getElementById("start").onclick = async () => {
+    try {
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+        }
+
+        stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: { ideal: "environment" }
+            },
+            audio: false
+        });
+
+        video.srcObject = stream;
+        await video.play();
+        resizeCanvas();
+
+        status.textContent =
+            "Camera ready. Calibrate using a known length.";
+    } catch (error) {
+        status.textContent =
+            "Camera unavailable. Allow camera access and open " +
+            "this page through HTTPS or localhost.";
+    }
+};
+
+function resizeCanvas() {
+    if (!video.videoWidth) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    draw();
+}
+
+video.addEventListener("loadedmetadata", resizeCanvas);
+video.addEventListener("resize", resizeCanvas);
+
+function distance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (points.length >= 2) {
+        ctx.strokeStyle = "#ffcc32";
+        ctx.lineWidth = Math.max(3, canvas.width / 180);
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        ctx.lineTo(points[1].x, points[1].y);
+        ctx.stroke();
+    }
+
+    points.forEach((p, i) => {
+        ctx.fillStyle = "#ffcc32";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, Math.max(6, canvas.width / 90),
+            0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#111";
+        ctx.font = `bold ${Math.max(14, canvas.width / 35)}px Arial`;
+        ctx.fillText(String(i + 1), p.x + 10, p.y - 10);
+    });
+}
+
+canvas.addEventListener("pointerdown", event => {
+    if (!video.videoWidth) {
+        status.textContent = "Open the camera first.";
+        return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+
+    points.push({
+        x: (event.clientX - rect.left) *
+            canvas.width / rect.width,
+        y: (event.clientY - rect.top) *
+            canvas.height / rect.height
+    });
+
+    if (points.length === 2) {
+        const pixels = distance(points[0], points[1]);
+
+        if (mode === "calibrate") {
+            const length = Number(known.value);
+
+            if (!(length > 0)) {
+                status.textContent =
+                    "Enter a valid reference length.";
+                points = [];
+                draw();
+                return;
+            }
+
+            pixelsPerCm = pixels / length;
+
+            status.textContent =
+                "Calibration complete. Now tap Measure and " +
+                "select the object's two endpoints.";
+        } else if (pixelsPerCm) {
+            const cm = pixels / pixelsPerCm;
+            const value = unit.value === "in"
+                ? cm / 2.54
+                : cm;
+
+            output.textContent =
+                value.toFixed(2) + " " + unit.value;
+
+            status.textContent =
+                "Estimated length. Keep the reference and " +
+                "object at the same distance from the camera.";
+        } else {
+            status.textContent =
+                "Calibrate first using a known length.";
+        }
+    } else if (points.length === 1) {
+        status.textContent =
+            "Tap the other endpoint of the length.";
+    } else {
+        points = [points[points.length - 1]];
+    }
+
+    draw();
+});
+
+document.getElementById("calibrate").onclick = () => {
+    mode = "calibrate";
+    points = [];
+    output.textContent = "Calibrating";
+    status.textContent =
+        "Enter a known length. Tap its start and end points.";
+    draw();
+};
+
+document.getElementById("measure").onclick = () => {
+    mode = "measure";
+    points = [];
+    status.textContent =
+        pixelsPerCm
+        ? "Tap the object's start and end points."
+        : "Calibrate first using a known reference.";
+    draw();
+};
+
+document.getElementById("reset").onclick = () => {
+    points = [];
+    output.textContent = "0.00 " + unit.value;
+    status.textContent = "Points cleared.";
+    draw();
+};
+
+unit.onchange = () => {
+    output.textContent = "0.00 " + unit.value;
+};
+
+window.addEventListener("pagehide", () => {
+    if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+    }
+});
+</script>
+</body>
+</html>
